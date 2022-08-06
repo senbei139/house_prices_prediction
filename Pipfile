@@ -15,6 +15,7 @@ xgboost = "*"
 sklearn = "*"
 tensorflow = "*"
 pydot = "*"
+missingno = "*"
 
 [dev-packages]
 

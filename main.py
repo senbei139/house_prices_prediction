@@ -1,27 +1,41 @@
 import numpy as np
 import pandas as pd
 import itertools
-from xgboost import XGBClassifier
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import log_loss, accuracy_score
-from sklearn.model_selection import KFold
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.ensemble import RandomForestRegressor
+
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers.experimental import preprocessing
+from xgboost import XGBRegressor
 
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import log_loss, accuracy_score
+from sklearn.model_selection import KFold
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.svm import SVR
+
+from tensorflow.keras import layers
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers.experimental import preprocessing
+from tensorflow.keras.wrappers.scikit_learn import KerasRegressor
+
+
+
+####################
+# https://www.tensorflow.org/tutorials/keras/regression?hl=ja
+####################
 
 train = pd.read_csv('dataset/train.csv')
 test = pd.read_csv('dataset/test.csv')
+# check data types
 # pd.set_option('display.max_rows', None)
+# print(train.dtypes)
 
+###################################
+# encode labels to number
+###################################
 for i in range(train.shape[1]):
     if train.iloc[:, i].dtypes == object:
         le = LabelEncoder()
@@ -29,115 +43,165 @@ for i in range(train.shape[1]):
         train.iloc[:, i] = le.transform(list(train.iloc[:, i].values))
         test.iloc[:, i] = le.transform(list(test.iloc[:, i].values))
 
+###################################
+# search for missing data
+###################################
+# import missingno as msno
+# msno.matrix(df=train, figsize=(20,14), color=(0.5,0,0))
+# plt.show()
+
+###################################
+# split data and drop unnecessary data
+###################################
 train_id = train['Id']
 test_id = test['Id']
 
-train_x = train.drop(['Id', 'SalePrice'], axis=1)
-train_y = train['SalePrice']
-test_x = test.drop('Id', axis=1)
+x_train = train.drop(['Id', 'SalePrice'], axis=1)
+y_train = train['SalePrice']
+x_test = test.drop('Id', axis=1)
 
+###################################
 # dealing with missing data
-train_x = train_x.drop(['LotFrontage', 'MasVnrArea', 'GarageYrBlt'], axis=1)
-test_x = test_x.drop(['LotFrontage', 'MasVnrArea', 'GarageYrBlt'], axis=1)
-train_x = train_x.fillna(train_x.median())
-test_x = test_x.fillna(test_x.median())
+###################################
+# x_train = x_train.drop(['LotFrontage', 'MasVnrArea', 'GarageYrBlt'], axis=1)
+# x_test = x_test.drop(['LotFrontage', 'MasVnrArea', 'GarageYrBlt'], axis=1)
+# x_train = x_train.fillna(x_train.median())
+# x_test = x_test.fillna(x_test.median())
+Xmat = pd.concat([x_train, x_test])
+Xmat = Xmat.drop(['LotFrontage','MasVnrArea','GarageYrBlt'], axis=1)
+x_train = x_train.fillna(x_train.median())
+x_test = x_test.fillna(x_test.median())
+Xmat = Xmat.fillna(Xmat.median())
 
-train_y = np.log(train_y)
-# ax = sns.distplot(train_y)
+x_train['TotalSF'] = x_train['TotalBsmtSF'] + x_train['1stFlrSF'] + x_train['2ndFlrSF']
+x_test['TotalSF'] = x_test['TotalBsmtSF'] + x_test['1stFlrSF'] + x_test['2ndFlrSF']
+
+###################################
+# 回帰の場合、ターゲットが正規分布に従っていることが重要
+# 今回は従っていないので対数を取って擬似的に近づける
+###################################
+y_train = np.log(y_train)
+# ax = sns.distplot(y_train)
 # plt.show()
 
-# rf = RandomForestRegressor(n_estimators=80, max_features='auto')
-# rf.fit(train_x, train_y)
+###################################
+# 70以上の特徴からランダムフォレストを使って何が重要化推測する
+###################################
+rf = RandomForestRegressor(n_estimators=80, max_features='auto')
+rf.fit(x_train, y_train)
 
-# ranking = np.argsort(-rf.feature_importances_)
+ranking = np.argsort(-rf.feature_importances_)
 # f, ax = plt.subplots(figsize=(11, 9))
-# sns.barplot(x=rf.feature_importances_[ranking], y=train_x.columns.values[ranking], orient='h')
+# sns.barplot(x=rf.feature_importances_[ranking], y=x_train.columns.values[ranking], orient='h')
 # ax.set_xlabel("feature importance")
 # plt.tight_layout()
 # plt.show()
 
-# train_x = train_x.iloc[:, ranking[:30]]
-# test_x = test_x.iloc[:, ranking[:30]]
+x_train = x_train.iloc[:, ranking[:10]]
+x_test = x_test.iloc[:, ranking[:10]]
+###################################
+# 新しくInteractionを作成
+###################################
+x_train["Interaction"] = x_train["TotalSF"]*x_train["OverallQual"]
+x_test["Interaction"] = x_test["TotalSF"]*x_test["OverallQual"]
 
+
+###################################
+# Interactionを入れてもせいぜい31個しかFeatureがないので、vs SalePriceをすべてプロットしてみましょう。
+###################################
 # fig = plt.figure(figsize=(12, 7))
-# for i in np.arange(30):
+# for i in np.arange(10):
 #     ax = fig.add_subplot(5, 6, i+1)
-#     sns.regplot(x=train_x.iloc[:, i], y=train_y)
-
+#     sns.regplot(x=x_train.iloc[:, i], y=y_train)
+#
 # plt.tight_layout()
 # plt.show()
 
-train_stats = train.describe()
-train_stats = train_stats["SalePrice"]
-train_stats = train_stats.transpose()
+# 上記で見つかった外れ値を除外する
+Xmat = x_train
+Xmat['SalePrice'] = y_train
+Xmat = Xmat.drop(Xmat[(Xmat['TotalSF']>5) & (Xmat['SalePrice']<12.5)].index)
+Xmat = Xmat.drop(Xmat[(Xmat['GrLivArea']>5) & (Xmat['SalePrice']<13)].index)
+Xmat = Xmat.drop(Xmat[(Xmat['BsmtFinSF1']>5000) & (Xmat['SalePrice']<12.5)].index)
+
+# recover
+y_train = Xmat['SalePrice']
+x_train = Xmat.drop(['SalePrice'], axis=1)
 
 
-def norm(x):
-    return (x - train_stats['mean']) / train_stats['std']
+def xgboost():
+    print("Parameter optimization")
+    xgb_model = XGBRegressor()
+    reg_xgb = GridSearchCV(xgb_model,
+                       {'max_depth': [2,4,6],
+                        'n_estimators': [50,100,200]}, verbose=1)
+    reg_xgb.fit(x_train, y_train)
+
+    return reg_xgb
 
 
-normed_train_x = norm(train_x)
-normed_test_x = norm(test_x)
+def nn():
+    def create_model(optimizer='adam'):
+        model = Sequential()
+        model.add(layers.Dense(x_train.shape[1], input_dim=x_train.shape[1], kernel_initializer='normal', activation='relu'))
+        model.add(layers.Dense(16, kernel_initializer='normal', activation='relu'))
+        model.add(layers.Dense(1, kernel_initializer='normal'))
+
+        model.compile(loss='mean_squared_error', optimizer=optimizer)
+        return model
+
+    model = KerasRegressor(build_fn=create_model, verbose=0)
+# define the grid search parameters
+    optimizer = ['SGD','Adam']
+    batch_size = [10, 30, 50]
+    epochs = [10, 50, 100]
+    param_grid = dict(optimizer=optimizer, batch_size=batch_size, epochs=epochs)
+    reg_dl = GridSearchCV(estimator=model, param_grid=param_grid, n_jobs=-1)
+    reg_dl.fit(x_train, y_train)
+
+    return reg_dl
+
+def svr():
+    reg_svr = GridSearchCV(SVR(kernel='rbf', gamma=0.1), cv=5,
+                       param_grid={"C": [1e0, 1e1, 1e2, 1e3],
+                                   "gamma": np.logspace(-2, 2, 5)})
+    reg_svr.fit(x_train, y_train)
+
+    return reg_svr
 
 
-def build_model():
+reg_xgb = xgboost()
+reg_dl = nn()
+reg_svr = svr()
 
-    model_input = layers.Input(shape=(len(train_x.keys())))
-    x = model_input
-    x = layers.Dense(64, activation='relu', input_shape=[len(train_x.keys())])(x)
-    x = layers.Dense(64, activation='relu')(x)
-    model_output = layers.Dense(1)(x)
+# これらの予測値を列にまとめ、新しい、第２の訓練マトリックスを作ります。
+x_train2 = pd.DataFrame({
+    'XGB': reg_xgb.predict(x_train),
+    'DL': reg_dl.predict(x_train).ravel(),
+    'SVR': reg_svr.predict(x_train)
+})
 
-    model = Model(model_input, model_output, name="model_1")
-    model.summary()
-    keras.utils.plot_model(model, "model_1.png", show_shapes=True)
-    model.compile(
-        loss="mse",
-        optimizer=tf.keras.optimizers.RMSprop(0.001),
-        metrics=["mae", "mse"],
-    )
-    return model
+# 上5行だけ見てみると、どのモデルも比較的近い値を予測していますね。
+# では、最も単純な線形モデルを使って、各モデルの重みを決定し、最終的な全体の予測値を計算しましょう。最後に、ターゲットをlogにしていたので、expを使って元のスケールに戻すことを忘れないでください。
 
+# second-feature modeling using linear regression
+reg = LinearRegression()
+reg.fit(x_train2, y_train)
 
-model = build_model()
+# prediction using the test set
+x_test2 = pd.DataFrame({
+    'XGB': reg_xgb.predict(x_test),
+    'DL': reg_dl.predict(x_test).ravel(),
+    'SVR': reg_svr.predict(x_test),
+})
 
-train_dataset = tf.data.Dataset.from_tensor_slices((normed_train_x, train_y))
-train_dataset = train_dataset.shuffle(buffer_size=1460).batch(73)
-for epoch in range(1000):
-    print(f"epoch: {epoch}")
+# Don't forget to convert the prediction back to non-log scale
+y_pred = np.exp(reg.predict(x_test2))
 
-    for step, (x_batch_train, y_batch_train) in enumerate(train_dataset):
-        result = model.fit(x_batch_train, y_batch_train, verbose=0)
-        hist = pd.DataFrame(result.history)
-        hist['epoch'] = result.epoch
-        hist.tail()
+# submission
+submission = pd.DataFrame({
+    "Id": test_id,
+    "SalePrice": y_pred
+})
 
-    if epoch % 100 == 0:
-        test_scores = model.evaluate(x_batch_train, y_batch_train, verbose=0)
-        print("Test loss:", test_scores[0])
-        print("Test accuracy:", test_scores[1])
-
-
-def plot_history(history):
-    hist = pd.DataFrame(history.history)
-    hist['epoch'] = history.epoch
-
-    plt.figure()
-    plt.xlabel('Epoch')
-    plt.ylabel('Mean Abs Error [MPG]')
-    plt.plot(hist['epoch'], hist['mae'], label='Train Error')
-    plt.plot(hist['epoch'], hist['val_mae'], label="Val Error")
-    # plt.ylim([0, 5])
-    plt.legend()
-
-    plt.figure()
-    plt.xlabel('Epoch')
-    plt.ylabel('Mean Square Error [$MPG^2$]')
-    plt.plot(hist['epoch'], hist['mse'], label='Train Error')
-    plt.plot(hist['epoch'], hist['val_mse'], label="Val Error")
-    # plt.ylim([0, 20])
-    plt.legend()
-    plt.show()
-
-
-# plot_history(history)
+submission.to_csv('houseprice.csv', index=False)
